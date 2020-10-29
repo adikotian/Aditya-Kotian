@@ -1,0 +1,143 @@
+#Importing the necessary libraries
+import numpy as np
+import pandas as pd
+import tensorflow as tf
+
+#Reading the dataset into Python and used 'parse_dates' to retrieve the format of the Datetime strings to convert it into a easier
+#to understand format
+df = pd.read_csv('EURUSD_M15 (2).csv', parse_dates=['Time'], index_col='Time')
+df.head()
+
+#Defining the sizes of the training and test sets, both horizontally and vertically. I.e: Defining what variables (horizontal) and 
+#how long (vertical) the train/test sets will be. The training set is the data which the model will learn from. The test set will act like
+#'unseen' data which we will use to test the effectiveness of the model that's been created after learning from the training set.
+train_size = int(len(df) * 0.8)
+test_size = len(df) - train_size
+train, test = df.iloc[0:train_size], df.iloc[train_size:len(df)]
+print(train.shape, test.shape)
+import matplotlib.pyplot as plt
+plt.plot(df.reset_index()['Close'])
+#Visually seeing the training set data
+print(train)
+
+#Feature scaling is an important part of using neural networks. Feature scaling turns the values of the independent/dependent variables 
+#to a range between a pre-determined low range I.e: [0,1] in this case (applied to both train and test set data)
+f_columns = ['Open', 'High', 'Low', 'Volume']
+from sklearn.preprocessing import MinMaxScaler
+f_transformer = MinMaxScaler()
+f_transformer = f_transformer.fit(train[f_columns].to_numpy())
+train.loc[:, f_columns] = f_transformer.transform(train[f_columns].to_numpy())
+test.loc[:, f_columns] = f_transformer.transform(test[f_columns].to_numpy())
+
+close_transformer = MinMaxScaler()
+close_transformer = close_transformer.fit(train[['Close']])
+train['Close'] = close_transformer.transform(train[['Close']])
+test['Close'] = close_transformer.transform(test[['Close']])
+
+#Printing the new format of the data now that it's been feature scaled
+print(train)
+print(test)
+
+#Now beginning to create our model. This step tells the model that in order to create a one-day ahead prediction is uses the
+#past n time-steps worth of data. The value of n is later specified to be 100. So the model knows that to create a one-day ahead
+#prediction it uses the past 100 days worth of data.
+def create_dataset(X, y, time_steps=1):
+    Xs, ys = [], []
+    for i in range(len(X) - time_steps):
+        v = X.iloc[i:(i + time_steps)].values
+        Xs.append(v)
+        ys.append(y.iloc[i + time_steps])
+    return np.array(Xs), np.array(ys)  
+    
+#Now defining out of all our variables, which ones are the independent ones and the dependent one. Here we specify the independent
+#and dependent variables within our training set
+trainX = train.iloc[:,0:4]
+trainY = train.iloc[:,4]
+print(trainX)
+print(trainY)
+
+#Now defining out of all our variables, which ones are the independent ones and the dependent one. Here we specify the independent
+#and dependent variables within our test set
+testX = test.iloc[:,0:4]
+testY = test.iloc[:, 4]
+print(testX)
+print(testY)
+
+#Now defining our time-steps and telling the model that for every closing price within our training and test sets, you must use only 
+#the past 100 days worth of data in order to create a prediction for said closing price
+time_steps = 100
+X_train, y_train = create_dataset(trainX, trainY, time_steps)
+X_test, y_test = create_dataset(testX, testY, time_steps)
+print(X_train.shape) 
+print(y_train.shape)
+print(X_test.shape)
+print(y_test.shape)
+
+#Defining the parameters of the LSTM model. (NOTE: IF YOU DO RUN THIS IT WILL TAKE ~30 MINS)
+from tensorflow import keras
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import Dense
+from tensorflow.keras.layers import LSTM
+model=Sequential()
+model.add(LSTM(30, return_sequences=True, input_shape=(X_train.shape[1], X_train.shape[2])))
+model.add(LSTM(30, return_sequences=True))
+model.add(LSTM(30))
+model.add(Dense(1))
+model.compile(loss='mean_squared_error', optimizer='adam')
+model.fit(X_train,y_train,validation_data=(X_test,y_test),epochs=20,batch_size=50,verbose=1)
+
+#We have our model completed. Now recall we applied a feature scaling earlier which transformed our data between [0,1]. We must 
+#'undo' this transformation by applying it's inverse to retrieve the 'actual' prices in its regular format
+y_pred = model.predict(X_test)
+y_train_inv = close_transformer.inverse_transform(y_train.reshape(1,-1))
+y_test_inv = close_transformer.inverse_transform(y_test.reshape(1,-1))
+y_pred_inv = close_transformer.inverse_transform(y_pred)
+
+#Here we see the data in the transformed format as compared to how it is normally for the closing price variable
+print(y_train)
+print(y_train_inv)
+
+#Now we see the effectiveness of the model. If you look closely the blue line is what we saw at the very start, it represents the actual
+#closing price in our training set. The red line displays what the model predicted the closing price to be.
+import matplotlib.pyplot as plt
+plt.plot(y_train_inv.flatten(),label = 'true')
+y_runthrough = model.predict(X_train)
+y_runthrough_inv = close_transformer.inverse_transform(y_runthrough)
+plt.plot(y_runthrough_inv.flatten(), 'red', label='predicted')
+
+#Now visually seeing how well the model predicted the 'unseen' data in the test set.
+import matplotlib.pyplot as plt
+plt.plot(y_pred_inv.flatten(), 'r', label = 'predicted')
+plt.plot(y_test_inv.flatten(), label='true')
+
+#Zooming into the previous graph to get a better sense of how the model is performing
+A = y_pred_inv.flatten()
+plt.plot(A[7600:], label='predicted')
+B = y_test_inv.flatten()
+plt.plot(B[7600:], label='actual')
+
+#Now beginning to actually create the (real time) next day prediction 
+onedayaheadpredictors = test.iloc[len(df)-time_steps: len(df), 0:4]
+print(onedayaheadpredictors)
+print(onedayaheadpredictors.shape)
+
+print(test)
+print(test.shape)
+last = test.tail(100)
+
+#Now we see all the values we will use for the (real time) tomorrow prediction
+onedayaheadpredictors = last.iloc[: , 0:4].values
+print(onedayaheadpredictors)
+print(onedayaheadpredictors.shape)
+
+onedayaheadpredictorsB = onedayaheadpredictors.reshape((1,100,4))
+print(onedayaheadpredictorsB.shape)
+
+#The value of tomorrows prediction. Needs to be inversed
+OneDayPrediction = model.predict(onedayaheadpredictorsB)
+print(OneDayPrediction)
+
+#The final value for tomorrows closing price of the EUR/USD.
+OneDayPrediction_inv = close_transformer.inverse_transform(OneDayPrediction)
+print(OneDayPrediction_inv)
+        
